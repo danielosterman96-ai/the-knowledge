@@ -403,6 +403,7 @@
 const SEED_RUNS = [
   {
     id: "r1",
+    neighborhoodId: "gilman-square",
     title: "The Station to the Square",
     difficultyLevel: 1,
     difficultyLabel: "Linear Artery",
@@ -426,6 +427,7 @@ const SEED_RUNS = [
   },
   {
     id: "r2",
+    neighborhoodId: "gilman-square",
     title: "The Square to City Hall",
     difficultyLevel: 2,
     difficultyLabel: "Landmark Pivot",
@@ -445,6 +447,7 @@ const SEED_RUNS = [
   },
   {
     id: "r3",
+    neighborhoodId: "gilman-square",
     title: "City Hall to Central Library",
     difficultyLevel: 2,
     difficultyLabel: "Landmark Pivot",
@@ -463,6 +466,7 @@ const SEED_RUNS = [
   },
   {
     id: "r4",
+    neighborhoodId: "gilman-square",
     title: "The Square to Marshall St Playground",
     difficultyLevel: 3,
     difficultyLabel: "Restricted Maze",
@@ -485,6 +489,76 @@ const SEED_RUNS = [
     ],
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Neighborhoods. Somerville has no single official neighborhood list — this
+// combines commonly-cited sources (Wikipedia's neighborhood category, local
+// real-estate/city-data guides) into one working set. Treat this as "commonly
+// known squares/areas," not an authoritative city designation.
+//
+// Gilman Square's center is hand-verified (MBTA station coordinates). Every
+// other neighborhood's center is fetched live via the same free geocoding
+// service the "Add a run" feature already uses, then cached in localStorage
+// so it's only fetched once per browser, not on every visit.
+// ---------------------------------------------------------------------------
+
+const NEIGHBORHOODS = [
+  { id: "gilman-square", name: "Gilman Square", center: { lat: 42.38794, lng: -71.09679 }, verified: true },
+  { id: "davis-square", name: "Davis Square" },
+  { id: "union-square", name: "Union Square" },
+  { id: "ball-square", name: "Ball Square" },
+  { id: "magoun-square", name: "Magoun Square" },
+  { id: "teele-square", name: "Teele Square" },
+  { id: "powder-house-square", name: "Powder House Square" },
+  { id: "porter-square", name: "Porter Square" },
+  { id: "east-somerville", name: "East Somerville" },
+  { id: "winter-hill", name: "Winter Hill" },
+  { id: "assembly-square", name: "Assembly Square" },
+  { id: "spring-hill", name: "Spring Hill" },
+  { id: "central-hill", name: "Central Hill" },
+  { id: "ten-hills", name: "Ten Hills" },
+  { id: "prospect-hill", name: "Prospect Hill" },
+  { id: "cobble-hill", name: "Cobble Hill" },
+  { id: "brickbottom", name: "Brickbottom" },
+  { id: "inner-belt", name: "Inner Belt District" },
+];
+
+const STORAGE_KEY_NEIGHBORHOOD_CENTERS = "logbook:neighborhoodCenters:v1";
+
+function getNeighborhood(id) {
+  return NEIGHBORHOODS.find(n => n.id === id);
+}
+
+function neighborhoodRuns(id) {
+  return RUNS.filter(r => r.neighborhoodId === id);
+}
+
+function neighborhoodCoverage(id) {
+  const runs = neighborhoodRuns(id);
+  if (runs.length === 0) return { known: 0, total: 0, runCount: 0 };
+  const knownRuns = runs.filter(r => r.mastery >= 0.7).length;
+  return { known: knownRuns, total: runs.length, runCount: runs.length };
+}
+
+// Resolve (and cache) a real center point for a neighborhood that doesn't
+// have a hand-verified one yet. Falls back to the Somerville city center if
+// geocoding fails, so the map always renders something sensible.
+async function resolveNeighborhoodCenter(neighborhood) {
+  if (neighborhood.center) return neighborhood.center;
+
+  const cache = loadJSON(STORAGE_KEY_NEIGHBORHOOD_CENTERS, {});
+  if (cache[neighborhood.id]) return cache[neighborhood.id];
+
+  try {
+    const result = await geocode(`${neighborhood.name}, Somerville, MA`);
+    const center = { lat: result.lat, lng: result.lng };
+    cache[neighborhood.id] = center;
+    saveJSON(STORAGE_KEY_NEIGHBORHOOD_CENTERS, cache);
+    return center;
+  } catch (e) {
+    return { lat: 42.387959, lng: -71.103088 }; // Somerville city center, verified, as a safe fallback
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Persistence — localStorage only, no backend, no account. Two things are
@@ -553,7 +627,7 @@ let map = null;
 // App state / router
 // ---------------------------------------------------------------------------
 
-let state = { screen: "logbook" };
+let state = { screen: "neighborhoodPicker" };
 const screenEl = document.getElementById("screen");
 
 function go(newState) {
@@ -563,7 +637,8 @@ function go(newState) {
 
 function render() {
   if (map) { map.remove(); map = null; }
-  if (state.screen === "logbook") renderLogbook();
+  if (state.screen === "neighborhoodPicker") renderNeighborhoodPicker();
+  else if (state.screen === "logbook") renderLogbook();
   else if (state.screen === "study") renderStudy();
   else if (state.screen === "quizPicker") renderQuizPicker();
   else if (state.screen === "quiz") renderQuiz();
@@ -580,21 +655,16 @@ function difficultyBadge(run) {
   return `<span class="badge" style="color:${color}">Lvl ${run.difficultyLevel} · ${run.difficultyLabel}</span>`;
 }
 
-function knownCount() {
-  return RUNS.filter(r => r.mastery >= 0.7).length;
-}
-
-// Coverage = how much of the street network appearing in your Logbook is
-// well-known, not literally "% of Somerville" — there's no ground-truth
-// total street count available without a much larger map dataset, so this
-// stays honestly scoped to "streets that appear in your own run data."
-// A street counted once even if multiple runs touch it; its coverage level
-// is the highest mastery among the runs that include it, so a street you've
-// nailed in one run still reads as known even if another run touching it
-// is still rough.
-function coverageStats() {
+// Coverage = how much of the street network appearing in a neighborhood's
+// runs is well-known, not literally "% of that neighborhood" — there's no
+// ground-truth total street count available without a much larger map
+// dataset, so this stays honestly scoped to "streets that appear in the
+// runs you/others have added for this neighborhood." A street counted once
+// even if multiple runs touch it; its coverage level is the highest mastery
+// among the runs that include it.
+function coverageStats(neighborhoodId) {
   const streetMastery = new Map(); // street name -> highest mastery seen
-  RUNS.forEach(run => {
+  neighborhoodRuns(neighborhoodId).forEach(run => {
     run.waypoints.forEach(wp => {
       const key = wp.name;
       const prev = streetMastery.get(key) || 0;
@@ -606,23 +676,64 @@ function coverageStats() {
   return { total, known, streetMastery };
 }
 
+function knownRunCount(neighborhoodId) {
+  return neighborhoodRuns(neighborhoodId).filter(r => r.mastery >= 0.7).length;
+}
+
 // ---------------------------------------------------------------------------
-// Logbook (home)
+// Neighborhood picker — City > Neighborhood. Only Somerville exists today,
+// structured so a second city could be added later without a rewrite.
+// ---------------------------------------------------------------------------
+
+function renderNeighborhoodPicker() {
+  screenEl.innerHTML = `
+    <h1>The Logbook</h1>
+    <p class="subtitle">Somerville, MA · pick a neighborhood to study</p>
+    <p class="footnote" style="margin-top:-8px;">Somerville has no official neighborhood list — this is a commonly-used set of squares and areas, not a city designation.</p>
+    <div class="divider-label"><div class="line"></div>Neighborhoods<div class="line"></div></div>
+    <div id="neighborhoodList"></div>
+  `;
+
+  const list = document.getElementById("neighborhoodList");
+  NEIGHBORHOODS.forEach(n => {
+    const cov = neighborhoodCoverage(n.id);
+    const card = document.createElement("button");
+    card.className = "run-card";
+    card.innerHTML = `
+      <div class="run-card-top">
+        <div class="run-title">${n.name}</div>
+        ${cov.runCount === 0 ? `<span class="badge" style="color:var(--pencil);">no runs yet</span>` : ""}
+      </div>
+      ${cov.runCount > 0 ? `
+        <div class="run-meta"><span>${cov.runCount} run${cov.runCount === 1 ? "" : "s"}</span><span>${cov.known} of ${cov.runCount} known cold</span></div>
+        <div class="mastery-bar"><div class="mastery-fill" style="width:${(cov.known / cov.runCount) * 100}%"></div></div>
+      ` : `<p style="font-size:12px; color:var(--pencil); margin:2px 0 0;">Be the first to add a run here.</p>`}
+    `;
+    card.onclick = () => go({ screen: "logbook", neighborhoodId: n.id });
+    list.appendChild(card);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Logbook (a single neighborhood's runs)
 // ---------------------------------------------------------------------------
 
 function renderLogbook() {
   const tab = state.logbookTab || "entries";
+  const neighborhood = getNeighborhood(state.neighborhoodId);
+  const runs = neighborhoodRuns(neighborhood.id);
 
   screenEl.innerHTML = `
+    <button class="back-link" id="backBtn">‹ Neighborhoods</button>
     <div style="display:flex; justify-content:space-between; align-items:baseline;">
-      <h1>The Logbook</h1>
+      <h1>${neighborhood.name}</h1>
       <span class="mono" style="color:var(--rust); font-size:14px;">🔥 6</span>
     </div>
-    <p class="subtitle">Gilman Square, Somerville · ${knownCount()} of ${RUNS.length} runs known cold</p>
+    <p class="subtitle">Somerville · ${knownRunCount(neighborhood.id)} of ${runs.length} runs known cold</p>
     ${storageAvailable ? "" : `<div class="status-box error" style="margin-bottom:16px;">Your browser is blocking saved progress (private browsing or storage disabled) — runs and progress won't persist after you close this tab.</div>`}
 
     <div style="display:flex; gap:10px; margin-bottom:20px;">
-      <button class="primary-btn" id="quizBtn" style="flex:1;">Call a run</button>
+      <button class="primary-btn" id="quizBtn" style="flex:1;" ${runs.length === 0 ? "disabled" : ""}>Call a run</button>
       <button class="secondary-btn" id="newRunBtn" style="flex:0 0 56px; font-size:20px; padding:0;">+</button>
     </div>
 
@@ -634,18 +745,23 @@ function renderLogbook() {
     <div id="tabContent"></div>
   `;
 
-  document.getElementById("quizBtn").onclick = () => go({ screen: "quizPicker" });
-  document.getElementById("newRunBtn").onclick = () => go({ screen: "createRun" });
-  document.getElementById("tabEntries").onclick = () => go({ screen: "logbook", logbookTab: "entries" });
-  document.getElementById("tabMap").onclick = () => go({ screen: "logbook", logbookTab: "map" });
+  document.getElementById("backBtn").onclick = () => go({ screen: "neighborhoodPicker" });
+  document.getElementById("quizBtn").onclick = () => go({ screen: "quizPicker", neighborhoodId: neighborhood.id });
+  document.getElementById("newRunBtn").onclick = () => go({ screen: "createRun", neighborhoodId: neighborhood.id });
+  document.getElementById("tabEntries").onclick = () => go({ screen: "logbook", neighborhoodId: neighborhood.id, logbookTab: "entries" });
+  document.getElementById("tabMap").onclick = () => go({ screen: "logbook", neighborhoodId: neighborhood.id, logbookTab: "map" });
 
-  if (tab === "map") renderLogbookMapTab();
-  else renderLogbookEntriesTab();
+  if (tab === "map") renderLogbookMapTab(neighborhood, runs);
+  else renderLogbookEntriesTab(runs, neighborhood);
 }
 
-function renderLogbookEntriesTab() {
+function renderLogbookEntriesTab(runs, neighborhood) {
   const content = document.getElementById("tabContent");
-  RUNS.forEach((run, i) => {
+  if (runs.length === 0) {
+    content.innerHTML = `<p style="color:var(--pencil); font-size:14px; font-style:italic;">No runs here yet. Tap + to add the first one.</p>`;
+    return;
+  }
+  runs.forEach((run, i) => {
     const card = document.createElement("button");
     card.className = "run-card";
     card.innerHTML = `
@@ -661,7 +777,7 @@ function renderLogbookEntriesTab() {
       </div>
       <div class="mastery-bar"><div class="mastery-fill" style="width:${run.mastery * 100}%"></div></div>
     `;
-    card.onclick = () => go({ screen: "study", runId: run.id, step: 0 });
+    card.onclick = () => go({ screen: "study", runId: run.id, step: 0, neighborhoodId: neighborhood.id });
     content.appendChild(card);
   });
 }
@@ -673,13 +789,13 @@ function masteryToColor(m) {
   return "#D8D2C2";
 }
 
-function renderLogbookMapTab() {
-  const { total, known } = coverageStats();
+function renderLogbookMapTab(neighborhood, runs) {
+  const { total, known } = coverageStats(neighborhood.id);
   const content = document.getElementById("tabContent");
   content.innerHTML = `
     <div class="coverage-stat">
       <span class="big-num">${known} / ${total}</span>
-      <span class="label">streets known cold<br/>(of streets in your Logbook — not all of Somerville)</span>
+      <span class="label">streets known cold<br/>(of streets in this neighborhood's Logbook)</span>
     </div>
     <div class="legend-row">
       <span><span class="legend-dot" style="background:#2C4A3E;"></span>known</span>
@@ -690,27 +806,31 @@ function renderLogbookMapTab() {
     <p class="footnote">Tap a route to study it.</p>
   `;
 
-  const allLatLngs = RUNS.flatMap(r => r.waypoints.map(w => [w.lat, w.lng]));
-  map = L.map("overviewMap", { zoomControl: true, scrollWheelZoom: false }).setView(CENTER, 15);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  }).addTo(map);
+  resolveNeighborhoodCenter(neighborhood).then(center => {
+    const mapEl = document.getElementById("overviewMap");
+    if (!mapEl) return; // user navigated away before this resolved
+    map = L.map("overviewMap", { zoomControl: true, scrollWheelZoom: false }).setView([center.lat, center.lng], 15);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
 
-  RUNS.forEach(run => {
-    const latlngs = run.waypoints.map(w => [w.lat, w.lng]);
-    if (latlngs.length < 2) return;
-    const color = masteryToColor(run.mastery);
-    const line = L.polyline(latlngs, { color, weight: 5, opacity: 0.85 }).addTo(map);
-    line.bindPopup(`<strong>${run.title}</strong><br/>${Math.round(run.mastery * 100)}% known`);
-    line.on("click", () => go({ screen: "study", runId: run.id, step: 0 }));
+    const allLatLngs = runs.flatMap(r => r.waypoints.map(w => [w.lat, w.lng]));
+    runs.forEach(run => {
+      const latlngs = run.waypoints.map(w => [w.lat, w.lng]);
+      if (latlngs.length < 2) return;
+      const color = masteryToColor(run.mastery);
+      const line = L.polyline(latlngs, { color, weight: 5, opacity: 0.85 }).addTo(map);
+      line.bindPopup(`<strong>${run.title}</strong><br/>${Math.round(run.mastery * 100)}% known`);
+      line.on("click", () => go({ screen: "study", runId: run.id, step: 0, neighborhoodId: neighborhood.id }));
 
-    run.waypoints.forEach(w => {
-      L.circleMarker([w.lat, w.lng], { radius: 4, color, fillColor: color, fillOpacity: 1, weight: 1 }).addTo(map);
+      run.waypoints.forEach(w => {
+        L.circleMarker([w.lat, w.lng], { radius: 4, color, fillColor: color, fillOpacity: 1, weight: 1 }).addTo(map);
+      });
     });
-  });
 
-  if (allLatLngs.length) map.fitBounds(allLatLngs, { padding: [24, 24] });
+    if (allLatLngs.length) map.fitBounds(allLatLngs, { padding: [24, 24] });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -750,10 +870,10 @@ function renderStudy() {
     </div>
   `;
 
-  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook", neighborhoodId: run.neighborhoodId });
   document.getElementById("backStepBtn").onclick = () => go({ screen: "study", runId: run.id, step: step - 1 });
   document.getElementById("nextStepBtn").onclick = () => {
-    if (isLast) { run.studied = true; saveProgress(); go({ screen: "logbook" }); }
+    if (isLast) { run.studied = true; saveProgress(); go({ screen: "logbook", neighborhoodId: run.neighborhoodId }); }
     else go({ screen: "study", runId: run.id, step: step + 1 });
   };
 
@@ -794,14 +914,15 @@ function renderStudy() {
 // ---------------------------------------------------------------------------
 
 function renderQuizPicker() {
-  const studied = RUNS.filter(r => r.studied);
+  const neighborhood = getNeighborhood(state.neighborhoodId);
+  const studied = neighborhoodRuns(neighborhood.id).filter(r => r.studied);
   screenEl.innerHTML = `
-    <button class="back-link" id="backBtn">‹ Logbook</button>
+    <button class="back-link" id="backBtn">‹ ${neighborhood.name}</button>
     <h2>Which run?</h2>
     <p class="subtitle">Pick a run you've studied to be called on.</p>
     <div id="list"></div>
   `;
-  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook", neighborhoodId: neighborhood.id });
 
   const list = document.getElementById("list");
   if (studied.length === 0) {
@@ -878,7 +999,7 @@ function renderQuiz() {
     <div id="nextWrap" style="margin-top:16px;"></div>
   `;
 
-  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook", neighborhoodId: run.neighborhoodId });
 
   const optionsEl = document.getElementById("options");
   let answered = false;
@@ -965,7 +1086,7 @@ function renderResults() {
       <button class="primary-btn" id="doneBtn" style="max-width:280px;">Back to the logbook</button>
     </div>
   `;
-  document.getElementById("doneBtn").onclick = () => go({ screen: "logbook" });
+  document.getElementById("doneBtn").onclick = () => go({ screen: "logbook", neighborhoodId: run.neighborhoodId });
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,10 +1178,12 @@ function routeToWaypoints(route, fromLabel, toLabel) {
 }
 
 function renderCreateRun() {
+  const neighborhood = getNeighborhood(state.neighborhoodId);
+
   screenEl.innerHTML = `
-    <button class="back-link" id="backBtn">‹ Logbook</button>
+    <button class="back-link" id="backBtn">‹ ${neighborhood.name}</button>
     <h2>Add a run</h2>
-    <p class="subtitle">Type two points. We'll fetch the real walking route between them — you fill in the local knowledge after.</p>
+    <p class="subtitle">${neighborhood.name} · Type two points. We'll fetch the real walking route between them — you fill in the local knowledge after.</p>
 
     <label class="field-label">Run name</label>
     <input class="text-input" id="titleInput" placeholder="e.g. The Square to the Library" />
@@ -1080,7 +1203,7 @@ function renderCreateRun() {
     <p class="footnote">Uses free OpenStreetMap services (Nominatim + OSRM). Occasionally slow or briefly unavailable since they run on donated infrastructure — if it fails, just try again in a moment.</p>
   `;
 
-  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook", neighborhoodId: neighborhood.id });
 
   let selectedLevel = 1;
   const picker = document.getElementById("levelPicker");
@@ -1126,6 +1249,7 @@ function renderCreateRun() {
 
       const newRun = {
         id: "u" + Date.now(),
+        neighborhoodId: neighborhood.id,
         title,
         difficultyLevel: selectedLevel,
         difficultyLabel: LEVELS.find(l => l.level === selectedLevel).label,
