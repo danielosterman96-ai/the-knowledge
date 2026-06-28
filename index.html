@@ -258,6 +258,73 @@
   }
 
   .leaflet-popup-content { font-size: 13px; }
+
+  .field-label {
+    display: block;
+    font-family: monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--pencil);
+    margin-bottom: 6px;
+  }
+
+  .text-input {
+    width: 100%;
+    border: 1px solid var(--paper-shadow);
+    background: var(--paper-card);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 14px;
+    color: var(--ink);
+    margin-bottom: 16px;
+    font-family: inherit;
+  }
+  .text-input:focus { outline: none; border-color: var(--green); }
+
+  .level-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .level-option {
+    border: 1px solid var(--paper-shadow);
+    background: var(--paper-card);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .level-option.selected {
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .level-option .lvl-num { font-family: monospace; font-size: 11px; opacity: 0.7; }
+  .level-option .lvl-name { font-size: 13px; font-weight: 600; margin-top: 2px; }
+
+  .status-box {
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 13px;
+    margin: 4px 0 16px;
+    line-height: 1.5;
+  }
+  .status-box.loading { background: var(--paper-card); border: 1px solid var(--paper-shadow); color: var(--pencil); }
+  .status-box.error { background: #2A1815; border: 1px solid var(--rust); color: #F2C9B8; }
+
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--paper-shadow);
+    border-top-color: var(--green);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -282,7 +349,7 @@
 // philosophy.
 // ===========================================================================
 
-const RUNS = [
+const SEED_RUNS = [
   {
     id: "r1",
     title: "The Station to the Square",
@@ -368,6 +435,66 @@ const RUNS = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Persistence — localStorage only, no backend, no account. Two things are
+// saved separately from the seed content so future app updates (better
+// coordinates, new seed runs, etc.) always come through cleanly:
+//   1. progress on seed runs (studied / mastery), keyed by run id
+//   2. runs created via "Add a run", saved in full
+// localStorage can throw (private browsing, storage disabled, quota full),
+// so every read/write is wrapped — a storage failure should never crash
+// the app, just mean progress quietly isn't saved this session.
+// ---------------------------------------------------------------------------
+
+const STORAGE_KEY_PROGRESS = "logbook:progress:v1";
+const STORAGE_KEY_USER_RUNS = "logbook:userRuns:v1";
+let storageAvailable = true;
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    storageAvailable = false;
+    return fallback;
+  }
+}
+
+function saveJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    storageAvailable = false;
+  }
+}
+
+function saveProgress() {
+  const progress = {};
+  RUNS.forEach(r => {
+    if (!r.id.startsWith("u")) progress[r.id] = { studied: r.studied, mastery: r.mastery };
+  });
+  saveJSON(STORAGE_KEY_PROGRESS, progress);
+}
+
+function saveUserRuns() {
+  const userRuns = RUNS.filter(r => r.id.startsWith("u"));
+  saveJSON(STORAGE_KEY_USER_RUNS, userRuns);
+}
+
+function buildInitialRuns() {
+  const savedProgress = loadJSON(STORAGE_KEY_PROGRESS, {});
+  const savedUserRuns = loadJSON(STORAGE_KEY_USER_RUNS, []);
+
+  const seedWithProgress = SEED_RUNS.map(r => {
+    const saved = savedProgress[r.id];
+    return saved ? { ...r, studied: saved.studied, mastery: saved.mastery } : { ...r };
+  });
+
+  return [...seedWithProgress, ...savedUserRuns];
+}
+
+let RUNS = buildInitialRuns();
+
 const CENTER = [42.38700, -71.09650];
 let map = null;
 
@@ -390,6 +517,7 @@ function render() {
   else if (state.screen === "quizPicker") renderQuizPicker();
   else if (state.screen === "quiz") renderQuiz();
   else if (state.screen === "results") renderResults();
+  else if (state.screen === "createRun") renderCreateRun();
 }
 
 function difficultyColor(level) {
@@ -416,14 +544,19 @@ function renderLogbook() {
       <span class="mono" style="color:var(--rust); font-size:14px;">🔥 6</span>
     </div>
     <p class="subtitle">Gilman Square, Somerville · ${knownCount()} of ${RUNS.length} runs known cold</p>
+    ${storageAvailable ? "" : `<div class="status-box error" style="margin-bottom:16px;">Your browser is blocking saved progress (private browsing or storage disabled) — runs and progress won't persist after you close this tab.</div>`}
 
-    <button class="primary-btn" style="margin-bottom:20px;" id="quizBtn">Call a run</button>
+    <div style="display:flex; gap:10px; margin-bottom:20px;">
+      <button class="primary-btn" id="quizBtn" style="flex:1;">Call a run</button>
+      <button class="secondary-btn" id="newRunBtn" style="flex:0 0 56px; font-size:20px; padding:0;">+</button>
+    </div>
 
     <div class="divider-label"><div class="line"></div>Entries<div class="line"></div></div>
     <div id="runList"></div>
   `;
 
   document.getElementById("quizBtn").onclick = () => go({ screen: "quizPicker" });
+  document.getElementById("newRunBtn").onclick = () => go({ screen: "createRun" });
 
   const list = document.getElementById("runList");
   RUNS.forEach((run, i) => {
@@ -487,7 +620,7 @@ function renderStudy() {
   document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
   document.getElementById("backStepBtn").onclick = () => go({ screen: "study", runId: run.id, step: step - 1 });
   document.getElementById("nextStepBtn").onclick = () => {
-    if (isLast) { run.studied = true; go({ screen: "logbook" }); }
+    if (isLast) { run.studied = true; saveProgress(); go({ screen: "logbook" }); }
     else go({ screen: "study", runId: run.id, step: step + 1 });
   };
 
@@ -677,6 +810,13 @@ function renderResults() {
   const pct = Math.round((correct / total) * 100);
   const good = pct >= 70;
 
+  // Blend this attempt into the run's running mastery score rather than
+  // overwriting it outright, so one rough quiz doesn't erase prior progress
+  // and one lucky quiz doesn't instantly max it out.
+  const thisAttempt = correct / total;
+  run.mastery = Math.round((run.mastery * 0.5 + thisAttempt * 0.5) * 100) / 100;
+  saveProgress();
+
   screenEl.innerHTML = `
     <div style="text-align:center; padding-top:20px;">
       <div class="mono" style="font-size:11px; text-transform:uppercase; color:var(--pencil); margin-bottom:8px;">Run called</div>
@@ -693,6 +833,164 @@ function renderResults() {
     </div>
   `;
   document.getElementById("doneBtn").onclick = () => go({ screen: "logbook" });
+}
+
+// ---------------------------------------------------------------------------
+// Create a run — geocode two points (Nominatim) and fetch a real walking
+// route between them (OSRM demo server), both free, no API key required.
+// Both are public, donated infrastructure intended for light, end-user-
+// triggered use (one person clicking "create," not automated bulk queries) —
+// see Nominatim's usage policy and the OSRM demo server's usage policy.
+// If either call fails or is unavailable, we show a clear error and leave
+// the rest of the app untouched.
+// ---------------------------------------------------------------------------
+
+const LEVELS = [
+  { level: 1, label: "Linear Artery" },
+  { level: 2, label: "Landmark Pivot" },
+  { level: 3, label: "Restricted Maze" },
+  { level: 4, label: "Blind Cabbie" },
+];
+
+async function geocode(query) {
+  // Bias results toward the Gilman Square / Somerville area so a plain
+  // landmark name like "City Hall" resolves to the right one.
+  const biasedQuery = `${query}, Somerville, MA`;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(biasedQuery)}&limit=1`;
+  const res = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!res.ok) throw new Error("Geocoding service did not respond.");
+  const data = await res.json();
+  if (!data.length) throw new Error(`Couldn't find "${query}" on the map. Try a more specific name or address.`);
+  return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), displayName: data[0].display_name };
+}
+
+async function fetchWalkingRoute(from, to) {
+  const url = `https://router.project-osrm.org/route/v1/foot/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&steps=true`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Routing service did not respond.");
+  const data = await res.json();
+  if (data.code !== "Ok" || !data.routes || !data.routes.length) {
+    throw new Error("Couldn't find a walking route between those two points.");
+  }
+  return data.routes[0];
+}
+
+// Collapse OSRM's step-by-step output into a manageable waypoint list —
+// one entry per named street, not one per tiny segment.
+function routeToWaypoints(route, fromLabel, toLabel) {
+  const legs = route.legs || [];
+  const steps = legs.flatMap(l => l.steps || []);
+  const collapsed = [];
+  steps.forEach(step => {
+    const name = step.name && step.name.trim() ? step.name.trim() : null;
+    const loc = step.maneuver && step.maneuver.location; // [lng, lat]
+    if (!loc) return;
+    const last = collapsed[collapsed.length - 1];
+    if (name && last && last.name === name) return; // same street continuing, skip
+    collapsed.push({ name: name || "Unnamed path", lat: loc[1], lng: loc[0] });
+  });
+
+  if (collapsed.length === 0) return null;
+  collapsed[0].name = fromLabel;
+  collapsed[collapsed.length - 1].name = toLabel;
+
+  return collapsed.map(w => ({
+    name: w.name,
+    lat: w.lat,
+    lng: w.lng,
+    note: "No note added yet — walk this point and add what's worth knowing here.",
+  }));
+}
+
+function renderCreateRun() {
+  screenEl.innerHTML = `
+    <button class="back-link" id="backBtn">‹ Logbook</button>
+    <h2>Add a run</h2>
+    <p class="subtitle">Type two points. We'll fetch the real walking route between them — you fill in the local knowledge after.</p>
+
+    <label class="field-label">Run name</label>
+    <input class="text-input" id="titleInput" placeholder="e.g. The Square to the Library" />
+
+    <label class="field-label">From</label>
+    <input class="text-input" id="fromInput" placeholder="e.g. Gilman Square Station" />
+
+    <label class="field-label">To</label>
+    <input class="text-input" id="toInput" placeholder="e.g. Somerville City Hall" />
+
+    <label class="field-label">Difficulty</label>
+    <div class="level-picker" id="levelPicker"></div>
+
+    <div id="statusArea"></div>
+
+    <button class="primary-btn" id="createBtn">Find the route</button>
+    <p class="footnote">Uses free OpenStreetMap services (Nominatim + OSRM). Occasionally slow or briefly unavailable since they run on donated infrastructure — if it fails, just try again in a moment.</p>
+  `;
+
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+
+  let selectedLevel = 1;
+  const picker = document.getElementById("levelPicker");
+  LEVELS.forEach(l => {
+    const opt = document.createElement("button");
+    opt.className = "level-option" + (l.level === selectedLevel ? " selected" : "");
+    opt.innerHTML = `<div class="lvl-num">LVL ${l.level}</div><div class="lvl-name">${l.label}</div>`;
+    opt.onclick = () => {
+      selectedLevel = l.level;
+      [...picker.children].forEach(c => c.classList.remove("selected"));
+      opt.classList.add("selected");
+    };
+    picker.appendChild(opt);
+  });
+
+  document.getElementById("createBtn").onclick = async () => {
+    const title = document.getElementById("titleInput").value.trim();
+    const fromText = document.getElementById("fromInput").value.trim();
+    const toText = document.getElementById("toInput").value.trim();
+    const statusArea = document.getElementById("statusArea");
+    const createBtn = document.getElementById("createBtn");
+
+    if (!title || !fromText || !toText) {
+      statusArea.innerHTML = `<div class="status-box error">Fill in a run name, a starting point, and a destination first.</div>`;
+      return;
+    }
+
+    createBtn.disabled = true;
+    statusArea.innerHTML = `<div class="status-box loading"><span class="spinner"></span>Looking up "${fromText}"…</div>`;
+
+    try {
+      const fromPoint = await geocode(fromText);
+      statusArea.innerHTML = `<div class="status-box loading"><span class="spinner"></span>Looking up "${toText}"…</div>`;
+      const toPoint = await geocode(toText);
+
+      statusArea.innerHTML = `<div class="status-box loading"><span class="spinner"></span>Fetching the real walking route…</div>`;
+      const route = await fetchWalkingRoute(fromPoint, toPoint);
+      const waypoints = routeToWaypoints(route, fromText, toText);
+
+      if (!waypoints || waypoints.length < 2) {
+        throw new Error("Got a route back but couldn't make sense of it. Try slightly different start/end names.");
+      }
+
+      const newRun = {
+        id: "u" + Date.now(),
+        title,
+        difficultyLevel: selectedLevel,
+        difficultyLabel: LEVELS.find(l => l.level === selectedLevel).label,
+        author: "You",
+        confirmations: 0,
+        flags: 0,
+        studied: false,
+        mastery: 0,
+        waypoints,
+      };
+
+      RUNS.push(newRun);
+      saveUserRuns();
+      go({ screen: "study", runId: newRun.id, step: 0 });
+    } catch (err) {
+      statusArea.innerHTML = `<div class="status-box error">${err.message || "Something went wrong fetching that route. Try again in a moment."}</div>`;
+      createBtn.disabled = false;
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
