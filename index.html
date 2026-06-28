@@ -857,17 +857,38 @@ async function geocode(query) {
   // landmark name like "City Hall" resolves to the right one.
   const biasedQuery = `${query}, Somerville, MA`;
   const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(biasedQuery)}&limit=1`;
-  const res = await fetch(url, { headers: { "Accept": "application/json" } });
-  if (!res.ok) throw new Error("Geocoding service did not respond.");
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    // fetch() throws "Failed to fetch" for network failures AND for CORS
+    // rejections — the browser deliberately doesn't distinguish them for
+    // security reasons. Both Nominatim and the OSRM demo server are free,
+    // donated infrastructure and occasionally reject or time out in ways
+    // that surface this way. Retrying in a few seconds often works.
+    throw new Error(`Couldn't reach the map lookup service. This sometimes happens with these free map services under load — wait a few seconds and try again.`);
+  }
+  if (!res.ok) throw new Error(`Map lookup service returned an error (${res.status}). Try again in a moment.`);
   const data = await res.json();
   if (!data.length) throw new Error(`Couldn't find "${query}" on the map. Try a more specific name or address.`);
   return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), displayName: data[0].display_name };
 }
 
 async function fetchWalkingRoute(from, to) {
+  // The public OSRM demo server's documented profiles are car/bike/foot,
+  // but real-world reports suggest the public instance sometimes only
+  // honors "driving" regardless of profile requested. We ask for "foot"
+  // (correct per the docs) — if that profile isn't actually supported on
+  // a given day, OSRM returns a route anyway (just optimized for driving),
+  // so this still produces a usable, real street sequence either way.
   const url = `https://router.project-osrm.org/route/v1/foot/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&steps=true`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Routing service did not respond.");
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    throw new Error(`Couldn't reach the routing service. This sometimes happens with this free routing service under load — wait a few seconds and try again.`);
+  }
+  if (!res.ok) throw new Error(`Routing service returned an error (${res.status}). Try again in a moment.`);
   const data = await res.json();
   if (data.code !== "Ok" || !data.routes || !data.routes.length) {
     throw new Error("Couldn't find a walking route between those two points.");
