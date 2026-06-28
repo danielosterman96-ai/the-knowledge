@@ -1,27 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>The Logbook — Gilman Square</title>
 
-The Logbook
-🔥 6
-Gilman Square, Somerville · 1 of 4 runs known cold
+<!-- Leaflet (free, open-source map library) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-Call a run
-Entries
+<style>
+  :root {
+    --ink: #1B1F23;
+    --paper: #F7F4ED;
+    --green: #2C4A3E;
+    --rust: #B5482E;
+    --pencil: #8B8478;
+    --paper-shadow: #D8D2C2;
+    --paper-card: #FBF9F4;
+  }
 
-Lvl 1 · Linear Artery
-The Station to the Square
-4 points
-75% known
+  * { box-sizing: border-box; }
 
-Lvl 2 · Landmark Pivot
-The Square to City Hall
-3 points
-40% known
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: #EFEAE0;
+    color: var(--ink);
+  }
 
-Lvl 2 · Landmark Pivot
-City Hall to Central Library
-3 points
-Not started
+  #app {
+    max-width: 420px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--paper);
+    position: relative;
+    padding-bottom: 90px;
+  }
 
-Lvl 3 · Restricted Maze
-The Square to Marshall St Playground
-4 points
-30% known
+  .top-bar {
+    height: 6px;
+    background: linear-gradient(90deg, var(--green), var(--rust));
+  }
+
+  .screen { padding: 24px 20px; }
+
+  h1, h2 {
+    font-family: Georgia, "Times New Roman", serif;
+    margin: 0;
+  }
+
+  h1 { font-size: 28px; }
+  h2 { font-size: 22px; line-height: 1.25; }
+
+  .subtitle {
+    color: var(--pencil);
+    font-size: 14px;
+    margin: 4px 0 20px;
+  }
+
+  .mono {
+    font-family: "SF Mono", "Courier New", monospace;
+  }
+
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--pencil);
+    font-size: 14px;
+    background: none;
+    border: none;
+    padding: 0;
+    margin-bottom: 16px;
+    cursor: pointer;
+  }
+
+  .primary-btn {
+    width: 100%;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .primary-btn:disabled { opacity: 0.3; cursor: default; }
+
+  .secondary-btn {
+    width: 100%;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--paper-shadow);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .accent-btn {
+    background: var(--green);
+    color: var(--paper);
+    border: none;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .divider-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 12px;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--pencil);
+  }
+  .divider-label .line { flex: 1; height: 1px; background: var(--paper-shadow); }
+
+  .run-card {
+    text-align: left;
+    width: 100%;
+    border: 1px solid var(--paper-shadow);
+    background: var(--paper-card);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 12px;
+    cursor: pointer;
+  }
+
+  .run-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .run-title { font-weight: 600; font-size: 15px; }
+
+  .run-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--pencil);
+    margin-bottom: 8px;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .mastery-bar {
+    height: 5px;
+    border-radius: 4px;
+    background: var(--paper-shadow);
+    overflow: hidden;
+  }
+  .mastery-fill { height: 100%; background: var(--green); }
+
+  #map {
+    width: 100%;
+    height: 280px;
+    border-radius: 8px;
+    border: 1px solid var(--paper-shadow);
+    margin-bottom: 16px;
+  }
+
+  .point-card {
+    background: var(--ink);
+    color: var(--paper);
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 12px;
+  }
+  .point-eyebrow {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--paper-shadow); margin-bottom: 8px;
+  }
+  .point-name { font-family: Georgia, serif; font-size: 20px; margin-bottom: 8px; }
+  .point-note { font-size: 14px; line-height: 1.5; color: var(--paper-shadow); margin-bottom: 12px; }
+
+  .restriction-box {
+    border: 1px solid var(--rust);
+    background: #2A1815;
+    color: #F2C9B8;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+  .restriction-flag { font-family: monospace; font-size: 10px; color: #D8B0A0; margin-top: 4px; }
+
+  .tip-box {
+    background: var(--green);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .tip-attr { font-family: monospace; font-size: 10px; color: var(--paper-shadow); margin-top: 4px; }
+
+  .nav-row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .nav-row > * { flex: 1; }
+
+  .quiz-options { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+  .quiz-option {
+    text-align: left;
+    border: 1px solid var(--paper-shadow);
+    background: var(--paper-card);
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .quiz-option.correct { border-color: var(--green); background: var(--green); color: var(--paper); }
+  .quiz-option.wrong { border-color: var(--rust); background: var(--rust); color: var(--paper); }
+  .quiz-option.banned { border-color: var(--rust); background: #2A1815; color: #F2C9B8; }
+  .quiz-option.faded { opacity: 0.5; }
+  .quiz-option:disabled { cursor: default; }
+
+  .you-are-at {
+    text-align: center;
+    margin: 20px 0;
+  }
+  .you-are-at .eyebrow {
+    font-family: monospace; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--pencil); margin-bottom: 6px;
+  }
+  .you-are-at .place {
+    font-family: Georgia, serif; font-size: 24px;
+  }
+  .you-are-at .prompt { color: var(--pencil); font-size: 14px; margin-top: 8px; }
+
+  .footnote {
+    font-size: 11px; color: var(--pencil); line-height: 1.5; margin: 14px 0;
+  }
+
+  .leaflet-popup-content { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="top-bar"></div>
+  <div id="screen" class="screen"></div>
+</div>
+
+<script>
+// ===========================================================================
+// THE LOGBOOK — live map edition
+// Real Leaflet map + free OpenStreetMap tiles. No backend, no API key,
+// no build step. Data lives in this file as a JS object.
+//
+// Coordinates: Gilman Square Station is verified (MBTA/OSM, 42.38794,
+// -71.09679). Other landmark coordinates are approximated from published
+// distance/bearing data and are NOT survey-precise — good enough for
+// neighborhood-scale pins, not for anything requiring exact precision.
+// The junction and playground coordinates are estimated placements pending
+// real confirmation, consistent with this app's "verify by walking it"
+// philosophy.
+// ===========================================================================
+
+const RUNS = [
+  {
+    id: "r1",
+    title: "The Station to the Square",
+    difficultyLevel: 1,
+    difficultyLabel: "Linear Artery",
+    author: "Seed",
+    confirmations: 11,
+    flags: 0,
+    studied: true,
+    mastery: 0.75,
+    waypoints: [
+      { name: "Gilman Square Station", lat: 42.38794, lng: -71.09679,
+        note: "161 School St. Two entrances: School St bridge (west end) and the Community Path (east end)." },
+      { name: "School Street Bridge", lat: 42.38760, lng: -71.09640,
+        note: "Bridge carries School St over the old rail line, right by the west entrance." },
+      { name: "Medford Street", lat: 42.38700, lng: -71.09600,
+        note: "Head down Medford St toward the square — old commercial spine, brick buildings from the 1890s–1930s.",
+        tip: { text: "Sidewalk's wider on the east side — easier with a stroller or bike.", author: "Dana R." } },
+      { name: "Medford / Pearl / Marshall Junction", lat: 42.38660, lng: -71.09560,
+        note: "Historic heart of Gilman Square — confirm current signal/crossing pattern in person.",
+        approximate: true },
+    ],
+  },
+  {
+    id: "r2",
+    title: "The Square to City Hall",
+    difficultyLevel: 2,
+    difficultyLabel: "Landmark Pivot",
+    author: "Seed",
+    confirmations: 6,
+    flags: 0,
+    studied: true,
+    mastery: 0.4,
+    waypoints: [
+      { name: "Medford / Pearl / Marshall Junction", lat: 42.38660, lng: -71.09560,
+        note: "Start at the historic square.", approximate: true },
+      { name: "Highland Avenue approach", lat: 42.38680, lng: -71.09700,
+        note: "City Hall sits on Highland Ave — roughly 470 ft southwest of the T station as a straight-line distance." },
+      { name: "Somerville City Hall", lat: 42.38703, lng: -71.09802,
+        note: "93 Highland Ave. Built 1852, enlarged several times — look for the older brick core behind newer additions." },
+    ],
+  },
+  {
+    id: "r3",
+    title: "City Hall to Central Library",
+    difficultyLevel: 2,
+    difficultyLabel: "Landmark Pivot",
+    author: "Seed",
+    confirmations: 2,
+    flags: 0,
+    studied: false,
+    mastery: 0,
+    waypoints: [
+      { name: "Somerville City Hall", lat: 42.38703, lng: -71.09802, note: "93 Highland Ave." },
+      { name: "Highland Avenue", lat: 42.38650, lng: -71.09600,
+        note: "Library and City Hall are both on Highland Ave, close together near Central Hill." },
+      { name: "Central Library", lat: 42.38600, lng: -71.09417,
+        note: "79 Highland Ave. Renaissance Revival brick building, built 1914 with Carnegie funding." },
+    ],
+  },
+  {
+    id: "r4",
+    title: "The Square to Marshall St Playground",
+    difficultyLevel: 3,
+    difficultyLabel: "Restricted Maze",
+    author: "Priya K.",
+    confirmations: 4,
+    flags: 0,
+    studied: true,
+    mastery: 0.3,
+    waypoints: [
+      { name: "Medford / Pearl / Marshall Junction", lat: 42.38660, lng: -71.09560,
+        note: "Start at the square.", approximate: true },
+      { name: "Pearl Street", lat: 42.38640, lng: -71.09500,
+        note: "Pearl St runs from Marshall St to James St — this stretch closes for the annual Gilman Square street festival.",
+        tip: { text: "Closes for the street festival in late summer — check the date before relying on this run that week.", author: "Priya K." },
+        restriction: { text: "Example restriction: no left turn from Pearl St onto Marshall St during this stretch.", verified: false } },
+      { name: "Marshall Street", lat: 42.38600, lng: -71.09480,
+        note: "Connects Pearl St to Broadway." },
+      { name: "Marshall Street Playground", lat: 42.38560, lng: -71.09450,
+        note: "Small neighborhood park between Pearl St and Broadway.", approximate: true },
+    ],
+  },
+];
+
+const CENTER = [42.38700, -71.09650];
+let map = null;
+
+// ---------------------------------------------------------------------------
+// App state / router
+// ---------------------------------------------------------------------------
+
+let state = { screen: "logbook" };
+const screenEl = document.getElementById("screen");
+
+function go(newState) {
+  state = newState;
+  render();
+}
+
+function render() {
+  if (map) { map.remove(); map = null; }
+  if (state.screen === "logbook") renderLogbook();
+  else if (state.screen === "study") renderStudy();
+  else if (state.screen === "quizPicker") renderQuizPicker();
+  else if (state.screen === "quiz") renderQuiz();
+  else if (state.screen === "results") renderResults();
+}
+
+function difficultyColor(level) {
+  return level === 1 ? "#2C4A3E" : level === 2 ? "#8B8478" : level === 3 ? "#B5482E" : "#1B1F23";
+}
+
+function difficultyBadge(run) {
+  const color = difficultyColor(run.difficultyLevel);
+  return `<span class="badge" style="color:${color}">Lvl ${run.difficultyLevel} · ${run.difficultyLabel}</span>`;
+}
+
+function knownCount() {
+  return RUNS.filter(r => r.mastery >= 0.7).length;
+}
+
+// ---------------------------------------------------------------------------
+// Logbook (home)
+// ---------------------------------------------------------------------------
+
+function renderLogbook() {
+  screenEl.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+      <h1>The Logbook</h1>
+      <span class="mono" style="color:var(--rust); font-size:14px;">🔥 6</span>
+    </div>
+    <p class="subtitle">Gilman Square, Somerville · ${knownCount()} of ${RUNS.length} runs known cold</p>
+
+    <button class="primary-btn" style="margin-bottom:20px;" id="quizBtn">Call a run</button>
+
+    <div class="divider-label"><div class="line"></div>Entries<div class="line"></div></div>
+    <div id="runList"></div>
+  `;
+
+  document.getElementById("quizBtn").onclick = () => go({ screen: "quizPicker" });
+
+  const list = document.getElementById("runList");
+  RUNS.forEach((run, i) => {
+    const card = document.createElement("button");
+    card.className = "run-card";
+    card.innerHTML = `
+      <div class="run-card-top">
+        <div>
+          <div style="margin-bottom:4px;">${difficultyBadge(run)}</div>
+          <div class="run-title">${run.title}</div>
+        </div>
+      </div>
+      <div class="run-meta">
+        <span>${run.waypoints.length} points</span>
+        <span>${run.studied ? Math.round(run.mastery * 100) + "% known" : "Not started"}</span>
+      </div>
+      <div class="mastery-bar"><div class="mastery-fill" style="width:${run.mastery * 100}%"></div></div>
+    `;
+    card.onclick = () => go({ screen: "study", runId: run.id, step: 0 });
+    list.appendChild(card);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Study mode — real Leaflet map + waypoint walkthrough
+// ---------------------------------------------------------------------------
+
+function renderStudy() {
+  const run = RUNS.find(r => r.id === state.runId);
+  const step = state.step || 0;
+  const wp = run.waypoints[step];
+  const isLast = step === run.waypoints.length - 1;
+
+  screenEl.innerHTML = `
+    <button class="back-link" id="backBtn">‹ Logbook</button>
+    <h2>${run.title}</h2>
+    <div style="margin:8px 0 16px;">${difficultyBadge(run)}</div>
+    <div id="map"></div>
+    <div class="point-card">
+      <div class="point-eyebrow">📍 Point ${step + 1} of ${run.waypoints.length}</div>
+      <div class="point-name">${wp.name}</div>
+      <div class="point-note">${wp.note}${wp.approximate ? " <em>(approximate location — confirm on the ground)</em>" : ""}</div>
+      ${wp.restriction ? `
+        <div class="restriction-box">
+          ⚠️ ${wp.restriction.text}
+          ${!wp.restriction.verified ? '<div class="restriction-flag">unverified — confirm signage in person</div>' : ""}
+        </div>` : ""}
+      ${wp.tip ? `
+        <div class="tip-box">
+          ✦ ${wp.tip.text}
+          <div class="tip-attr">— ${wp.tip.author}, local tip</div>
+        </div>` : ""}
+    </div>
+    <p class="footnote">Notes are landmark-level. Walk this run to confirm current signage, one-ways, and crossings before calling it learned.</p>
+    <div class="nav-row">
+      <button class="secondary-btn" id="backStepBtn" ${step === 0 ? "disabled" : ""}>Back</button>
+      <button class="accent-btn" id="nextStepBtn">${isLast ? "Finish studying" : "Next point →"}</button>
+    </div>
+  `;
+
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+  document.getElementById("backStepBtn").onclick = () => go({ screen: "study", runId: run.id, step: step - 1 });
+  document.getElementById("nextStepBtn").onclick = () => {
+    if (isLast) { run.studied = true; go({ screen: "logbook" }); }
+    else go({ screen: "study", runId: run.id, step: step + 1 });
+  };
+
+  // Build the real map after the #map div exists in the DOM
+  const center = [wp.lat, wp.lng];
+  map = L.map("map", { zoomControl: true, scrollWheelZoom: false }).setView(center, 16);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+
+  // Draw the full route, faded, then highlight progress
+  const fullLatLngs = run.waypoints.map(w => [w.lat, w.lng]);
+  L.polyline(fullLatLngs, { color: "#D8D2C2", weight: 4 }).addTo(map);
+  const progressLatLngs = fullLatLngs.slice(0, step + 1);
+  if (progressLatLngs.length > 1) {
+    L.polyline(progressLatLngs, { color: "#B5482E", weight: 4 }).addTo(map);
+  }
+
+  run.waypoints.forEach((w, i) => {
+    const reached = i <= step;
+    const marker = L.circleMarker([w.lat, w.lng], {
+      radius: i === step ? 9 : 6,
+      color: reached ? "#B5482E" : "#8B8478",
+      fillColor: reached ? "#B5482E" : "#F7F4ED",
+      fillOpacity: 1,
+      weight: 2,
+    }).addTo(map);
+    marker.bindPopup(`<strong>${w.name}</strong>`);
+    if (i === step) marker.openPopup();
+  });
+
+  map.fitBounds(fullLatLngs, { padding: [24, 24] });
+}
+
+// ---------------------------------------------------------------------------
+// Quiz picker
+// ---------------------------------------------------------------------------
+
+function renderQuizPicker() {
+  const studied = RUNS.filter(r => r.studied);
+  screenEl.innerHTML = `
+    <button class="back-link" id="backBtn">‹ Logbook</button>
+    <h2>Which run?</h2>
+    <p class="subtitle">Pick a run you've studied to be called on.</p>
+    <div id="list"></div>
+  `;
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+
+  const list = document.getElementById("list");
+  if (studied.length === 0) {
+    list.innerHTML = `<p style="color:var(--pencil); font-size:14px; font-style:italic;">Study a run first, then come back to be called on it.</p>`;
+    return;
+  }
+  studied.forEach(run => {
+    const card = document.createElement("button");
+    card.className = "run-card";
+    card.innerHTML = `
+      <div style="margin-bottom:4px;">${difficultyBadge(run)}</div>
+      <div class="run-title">${run.title}</div>
+      <div class="run-meta" style="margin-top:4px;"><span>${Math.round(run.mastery * 100)}% known</span><span></span></div>
+    `;
+    card.onclick = () => go({ screen: "quiz", runId: run.id, qIndex: 0, results: [] });
+    list.appendChild(card);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Call the Run — active recall quiz, with banned-turn aware distractors
+// ---------------------------------------------------------------------------
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildQuestions(run) {
+  const allNames = RUNS.flatMap(r => r.waypoints.map(w => w.name));
+  const qs = [];
+  for (let i = 0; i < run.waypoints.length - 1; i++) {
+    const current = run.waypoints[i];
+    const correct = run.waypoints[i + 1].name;
+    const restriction = current.restriction;
+    const bannedOption = restriction ? "Marshall Street" : null;
+    const pool = allNames.filter(n => n !== correct && !run.waypoints.some(w => w.name === n) && n !== bannedOption);
+    const distractorCount = bannedOption ? 1 : 2;
+    const distractors = shuffle(pool).slice(0, distractorCount);
+    const options = shuffle([correct, ...distractors, ...(bannedOption ? [bannedOption] : [])]);
+    qs.push({ from: current.name, correct, options, restriction, bannedOption });
+  }
+  return qs;
+}
+
+function renderQuiz() {
+  const run = RUNS.find(r => r.id === state.runId);
+  if (!state.questions) state.questions = buildQuestions(run);
+  const q = state.questions[state.qIndex];
+  const isLast = state.qIndex === state.questions.length - 1;
+
+  screenEl.innerHTML = `
+    <button class="back-link" id="backBtn">‹ Logbook</button>
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span class="mono" style="font-size:11px; text-transform:uppercase; color:var(--pencil);">Calling the run</span>
+      <span class="mono" style="font-size:11px; color:var(--pencil);">${state.qIndex + 1} / ${state.questions.length}</span>
+    </div>
+    <h2 style="margin-top:8px;">${run.title}</h2>
+    <div style="margin:8px 0 12px;">${difficultyBadge(run)}</div>
+    <div class="mastery-bar" style="margin-bottom:20px;"><div class="mastery-fill" style="width:${(state.qIndex / state.questions.length) * 100}%"></div></div>
+
+    <div class="you-are-at">
+      <div class="eyebrow">You are at</div>
+      <div class="place">${q.from}</div>
+      <div class="prompt">Where do you go next?</div>
+    </div>
+
+    <div class="quiz-options" id="options"></div>
+    <div id="explain"></div>
+    <div id="nextWrap" style="margin-top:16px;"></div>
+  `;
+
+  document.getElementById("backBtn").onclick = () => go({ screen: "logbook" });
+
+  const optionsEl = document.getElementById("options");
+  let answered = false;
+
+  q.options.forEach(opt => {
+    const btn = document.createElement("button");
+    btn.className = "quiz-option";
+    btn.innerHTML = `<span>${opt}</span>`;
+    btn.onclick = () => {
+      if (answered) return;
+      answered = true;
+      const isCorrect = opt === q.correct;
+      const isBanned = opt === q.bannedOption;
+
+      [...optionsEl.children].forEach(b => b.disabled = true);
+
+      if (isCorrect) btn.classList.add("correct");
+      else if (isBanned) btn.classList.add("banned");
+      else btn.classList.add("wrong");
+
+      [...optionsEl.children].forEach(b => {
+        if (b !== btn && b.textContent.trim() !== q.correct) b.classList.add("faded");
+        if (b.textContent.trim() === q.correct) b.classList.add("correct");
+      });
+
+      state.results = state.results || [];
+      state.results.push(isCorrect);
+
+      if (isBanned) {
+        document.getElementById("explain").innerHTML = `
+          <div class="restriction-box" style="margin-top:14px;">
+            ⚠️ That's a restricted turn — ${q.restriction.text.replace("Example restriction: ", "")} You studied this one, remember?
+          </div>`;
+      }
+
+      const nextWrap = document.getElementById("nextWrap");
+      const nextBtn = document.createElement("button");
+      nextBtn.className = "primary-btn";
+      nextBtn.textContent = isLast ? "See results" : "Next point →";
+      nextBtn.onclick = () => {
+        if (isLast) {
+          go({ screen: "results", runId: run.id, results: state.results });
+        } else {
+          go({ screen: "quiz", runId: run.id, qIndex: state.qIndex + 1, results: state.results, questions: state.questions });
+        }
+      };
+      nextWrap.appendChild(nextBtn);
+    };
+    optionsEl.appendChild(btn);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Results
+// ---------------------------------------------------------------------------
+
+function renderResults() {
+  const run = RUNS.find(r => r.id === state.runId);
+  const results = state.results;
+  const correct = results.filter(Boolean).length;
+  const total = results.length;
+  const pct = Math.round((correct / total) * 100);
+  const good = pct >= 70;
+
+  screenEl.innerHTML = `
+    <div style="text-align:center; padding-top:20px;">
+      <div class="mono" style="font-size:11px; text-transform:uppercase; color:var(--pencil); margin-bottom:8px;">Run called</div>
+      <h2>${run.title}</h2>
+      <div style="width:128px; height:128px; border-radius:999px; border:4px solid ${good ? "#2C4A3E" : "#B5482E"};
+                  display:flex; align-items:center; justify-content:center; margin:24px auto;">
+        <span style="font-family:Georgia,serif; font-size:34px;">${pct}%</span>
+      </div>
+      <p>${correct} of ${total} points correct</p>
+      <p style="color:var(--pencil); font-size:13px; max-width:280px; margin:0 auto 28px;">
+        ${good ? "Solid run. Walk it for real this week to lock it in." : "Worth another pass before you try walking it cold."}
+      </p>
+      <button class="primary-btn" id="doneBtn" style="max-width:280px;">Back to the logbook</button>
+    </div>
+  `;
+  document.getElementById("doneBtn").onclick = () => go({ screen: "logbook" });
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+render();
+</script>
+</body>
+</html>
