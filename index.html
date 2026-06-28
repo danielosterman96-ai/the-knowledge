@@ -325,6 +325,57 @@
     vertical-align: middle;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  .tab-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--paper-shadow);
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    padding: 8px 4px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--pencil);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab-btn.active {
+    color: var(--ink);
+    border-bottom-color: var(--rust);
+  }
+
+  .coverage-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .coverage-stat .big-num {
+    font-family: Georgia, serif;
+    font-size: 26px;
+  }
+  .coverage-stat .label {
+    font-size: 12px;
+    color: var(--pencil);
+  }
+
+  .legend-row {
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--pencil);
+    margin-bottom: 12px;
+  }
+  .legend-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+  }
 </style>
 </head>
 <body>
@@ -533,11 +584,35 @@ function knownCount() {
   return RUNS.filter(r => r.mastery >= 0.7).length;
 }
 
+// Coverage = how much of the street network appearing in your Logbook is
+// well-known, not literally "% of Somerville" — there's no ground-truth
+// total street count available without a much larger map dataset, so this
+// stays honestly scoped to "streets that appear in your own run data."
+// A street counted once even if multiple runs touch it; its coverage level
+// is the highest mastery among the runs that include it, so a street you've
+// nailed in one run still reads as known even if another run touching it
+// is still rough.
+function coverageStats() {
+  const streetMastery = new Map(); // street name -> highest mastery seen
+  RUNS.forEach(run => {
+    run.waypoints.forEach(wp => {
+      const key = wp.name;
+      const prev = streetMastery.get(key) || 0;
+      streetMastery.set(key, Math.max(prev, run.mastery));
+    });
+  });
+  const total = streetMastery.size;
+  const known = [...streetMastery.values()].filter(m => m >= 0.7).length;
+  return { total, known, streetMastery };
+}
+
 // ---------------------------------------------------------------------------
 // Logbook (home)
 // ---------------------------------------------------------------------------
 
 function renderLogbook() {
+  const tab = state.logbookTab || "entries";
+
   screenEl.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:baseline;">
       <h1>The Logbook</h1>
@@ -551,14 +626,25 @@ function renderLogbook() {
       <button class="secondary-btn" id="newRunBtn" style="flex:0 0 56px; font-size:20px; padding:0;">+</button>
     </div>
 
-    <div class="divider-label"><div class="line"></div>Entries<div class="line"></div></div>
-    <div id="runList"></div>
+    <div class="tab-row">
+      <button class="tab-btn ${tab === "entries" ? "active" : ""}" id="tabEntries">Entries</button>
+      <button class="tab-btn ${tab === "map" ? "active" : ""}" id="tabMap">Map</button>
+    </div>
+
+    <div id="tabContent"></div>
   `;
 
   document.getElementById("quizBtn").onclick = () => go({ screen: "quizPicker" });
   document.getElementById("newRunBtn").onclick = () => go({ screen: "createRun" });
+  document.getElementById("tabEntries").onclick = () => go({ screen: "logbook", logbookTab: "entries" });
+  document.getElementById("tabMap").onclick = () => go({ screen: "logbook", logbookTab: "map" });
 
-  const list = document.getElementById("runList");
+  if (tab === "map") renderLogbookMapTab();
+  else renderLogbookEntriesTab();
+}
+
+function renderLogbookEntriesTab() {
+  const content = document.getElementById("tabContent");
   RUNS.forEach((run, i) => {
     const card = document.createElement("button");
     card.className = "run-card";
@@ -576,8 +662,55 @@ function renderLogbook() {
       <div class="mastery-bar"><div class="mastery-fill" style="width:${run.mastery * 100}%"></div></div>
     `;
     card.onclick = () => go({ screen: "study", runId: run.id, step: 0 });
-    list.appendChild(card);
+    content.appendChild(card);
   });
+}
+
+function masteryToColor(m) {
+  // gray (unstudied) -> green (well known), matching the app's palette
+  if (m >= 0.7) return "#2C4A3E";
+  if (m >= 0.35) return "#8B8478";
+  return "#D8D2C2";
+}
+
+function renderLogbookMapTab() {
+  const { total, known } = coverageStats();
+  const content = document.getElementById("tabContent");
+  content.innerHTML = `
+    <div class="coverage-stat">
+      <span class="big-num">${known} / ${total}</span>
+      <span class="label">streets known cold<br/>(of streets in your Logbook — not all of Somerville)</span>
+    </div>
+    <div class="legend-row">
+      <span><span class="legend-dot" style="background:#2C4A3E;"></span>known</span>
+      <span><span class="legend-dot" style="background:#8B8478;"></span>in progress</span>
+      <span><span class="legend-dot" style="background:#D8D2C2;"></span>unstudied</span>
+    </div>
+    <div id="overviewMap" style="height:340px; border-radius:8px; border:1px solid var(--paper-shadow);"></div>
+    <p class="footnote">Tap a route to study it.</p>
+  `;
+
+  const allLatLngs = RUNS.flatMap(r => r.waypoints.map(w => [w.lat, w.lng]));
+  map = L.map("overviewMap", { zoomControl: true, scrollWheelZoom: false }).setView(CENTER, 15);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+
+  RUNS.forEach(run => {
+    const latlngs = run.waypoints.map(w => [w.lat, w.lng]);
+    if (latlngs.length < 2) return;
+    const color = masteryToColor(run.mastery);
+    const line = L.polyline(latlngs, { color, weight: 5, opacity: 0.85 }).addTo(map);
+    line.bindPopup(`<strong>${run.title}</strong><br/>${Math.round(run.mastery * 100)}% known`);
+    line.on("click", () => go({ screen: "study", runId: run.id, step: 0 }));
+
+    run.waypoints.forEach(w => {
+      L.circleMarker([w.lat, w.lng], { radius: 4, color, fillColor: color, fillOpacity: 1, weight: 1 }).addTo(map);
+    });
+  });
+
+  if (allLatLngs.length) map.fitBounds(allLatLngs, { padding: [24, 24] });
 }
 
 // ---------------------------------------------------------------------------
