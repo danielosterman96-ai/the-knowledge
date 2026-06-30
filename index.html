@@ -560,6 +560,95 @@ async function resolveNeighborhoodCenter(neighborhood) {
   }
 }
 
+const STORAGE_KEY_NEIGHBORHOOD_BOUNDARIES = "logbook:neighborhoodBoundaries:v1";
+
+// Most of these Somerville squares are informal, not official administrative
+// areas, so most will NOT have a real OSM boundary polygon — that's expected,
+// not a bug. Returns { type: "polygon", rings: [[lat,lng], ...] } when a real
+// boundary exists, or { type: "circle", radiusMeters } as an honest fallback
+// when it doesn't, so the UI can render the two cases differently rather than
+// presenting a guessed circle as if it were a real boundary.
+async function resolveNeighborhoodBoundary(neighborhood) {
+  const cache = loadJSON(STORAGE_KEY_NEIGHBORHOOD_BOUNDARIES, {});
+  if (cache[neighborhood.id]) return cache[neighborhood.id];
+
+  const query = `[out:json][timeout:15];
+    area["name"~"Somerville"]["admin_level"="8"]->.city;
+    (
+      relation["name"="${neighborhood.name}"]["boundary"](area.city);
+      way["name"="${neighborhood.name}"]["boundary"](area.city);
+    );
+    out geom;`;
+
+  let result = { type: "circle", radiusMeters: 280 };
+  try {
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      body: "data=" + encodeURIComponent(query),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const withGeom = (data.elements || []).find(el => el.geometry && el.geometry.length > 2);
+      if (withGeom) {
+        result = { type: "polygon", rings: withGeom.geometry.map(pt => [pt.lat, pt.lon]) };
+      }
+    }
+  } catch (e) {
+    // Overpass is free, donated infrastructure — a failed lookup just means
+    // we fall back to the circle, same as if no real boundary existed.
+  }
+
+  cache[neighborhood.id] = result;
+  saveJSON(STORAGE_KEY_NEIGHBORHOOD_BOUNDARIES, cache);
+  return result;
+}
+
+const STORAGE_KEY_TOTAL_STREETS = "logbook:totalStreets:v1";
+
+// Real total named-street count within a neighborhood's actual boundary
+// (or its fallback circle), via Overpass — this is what makes "X of Y known"
+// an honest measure of how much there is to learn, not just how many streets
+// happen to already be in someone's run data. Counts unique street NAMES,
+// matching how coverageStats() counts known streets, so the two numbers are
+// comparable. A street that's only partially in the boundary is still
+// counted once if any segment of it falls inside.
+async function resolveTotalStreets(neighborhood, boundary) {
+  const cache = loadJSON(STORAGE_KEY_TOTAL_STREETS, {});
+  if (cache[neighborhood.id] != null) return cache[neighborhood.id];
+
+  let areaFilter;
+  if (boundary.type === "polygon") {
+    const polyStr = boundary.rings.map(([lat, lng]) => `${lat} ${lng}`).join(" ");
+    areaFilter = `(poly:"${polyStr}")`;
+  } else {
+    const center = await resolveNeighborhoodCenter(neighborhood);
+    areaFilter = `(around:${boundary.radiusMeters},${center.lat},${center.lng})`;
+  }
+
+  const query = `[out:json][timeout:20];
+    way["highway"]["name"]${areaFilter};
+    out tags;`;
+
+  let total = null;
+  try {
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      body: "data=" + encodeURIComponent(query),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const names = new Set((data.elements || []).map(el => el.tags && el.tags.name).filter(Boolean));
+      total = names.size;
+    }
+  } catch (e) {
+    total = null; // free service hiccup — caller should fall back gracefully
+  }
+
+  cache[neighborhood.id] = total;
+  saveJSON(STORAGE_KEY_TOTAL_STREETS, cache);
+  return total;
+}
+
 // ---------------------------------------------------------------------------
 // Persistence — localStorage only, no backend, no account. Two things are
 // saved separately from the seed content so future app updates (better
@@ -790,12 +879,12 @@ function masteryToColor(m) {
 }
 
 function renderLogbookMapTab(neighborhood, runs) {
-  const { total, known } = coverageStats(neighborhood.id);
+  const { total: knownDataTotal, known } = coverageStats(neighborhood.id);
   const content = document.getElementById("tabContent");
   content.innerHTML = `
     <div class="coverage-stat">
-      <span class="big-num">${known} / ${total}</span>
-      <span class="label">streets known cold<br/>(of streets in this neighborhood's Logbook)</span>
+      <span class="big-num" id="coverageBigNum">${known} / ${knownDataTotal}</span>
+      <span class="label" id="coverageLabel">streets known cold<br/>(of streets in this neighborhood's Logbook)</span>
     </div>
     <div class="legend-row">
       <span><span class="legend-dot" style="background:#2C4A3E;"></span>known</span>
@@ -803,10 +892,10 @@ function renderLogbookMapTab(neighborhood, runs) {
       <span><span class="legend-dot" style="background:#D8D2C2;"></span>unstudied</span>
     </div>
     <div id="overviewMap" style="height:340px; border-radius:8px; border:1px solid var(--paper-shadow);"></div>
-    <p class="footnote">Tap a route to study it.</p>
+    <p class="footnote" id="boundaryNote">Tap a route to study it.</p>
   `;
 
-  resolveNeighborhoodCenter(neighborhood).then(center => {
+  Promise.all([resolveNeighborhoodCenter(neighborhood), resolveNeighborhoodBoundary(neighborhood)]).then(([center, boundary]) => {
     const mapEl = document.getElementById("overviewMap");
     if (!mapEl) return; // user navigated away before this resolved
     map = L.map("overviewMap", { zoomControl: true, scrollWheelZoom: false }).setView([center.lat, center.lng], 15);
@@ -814,6 +903,30 @@ function renderLogbookMapTab(neighborhood, runs) {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map);
+
+    let boundaryBounds = null;
+    const noteEl = document.getElementById("boundaryNote");
+    if (boundary.type === "polygon") {
+      const poly = L.polygon(boundary.rings, { color: "#1B1F23", weight: 1.5, fillColor: "#1B1F23", fillOpacity: 0.04, dashArray: "4 4" }).addTo(map);
+      boundaryBounds = poly.getBounds();
+      if (noteEl) noteEl.textContent = "Outline is " + neighborhood.name + "'s real OpenStreetMap boundary. Tap a route to study it.";
+    } else {
+      const circle = L.circle([center.lat, center.lng], { radius: boundary.radiusMeters, color: "#8B8478", weight: 1.5, fillColor: "#8B8478", fillOpacity: 0.04, dashArray: "2 6" }).addTo(map);
+      boundaryBounds = circle.getBounds();
+      if (noteEl) noteEl.textContent = neighborhood.name + " doesn't have a mapped boundary — shaded circle is an approximate area, not a real edge. Tap a route to study it.";
+    }
+
+    // Real total comes in slightly later (a second free Overpass query) — the
+    // stat shows the data-only number first, then upgrades to the real
+    // denominator once resolved, or stays as-is if that query fails.
+    resolveTotalStreets(neighborhood, boundary).then(realTotal => {
+      const numEl = document.getElementById("coverageBigNum");
+      const labelEl = document.getElementById("coverageLabel");
+      if (!numEl || realTotal == null) return;
+      const effectiveTotal = Math.max(realTotal, knownDataTotal); // never show fewer than what's already studied
+      numEl.textContent = `${known} / ${effectiveTotal}`;
+      labelEl.innerHTML = `streets known cold<br/>(of named streets in ${neighborhood.name}, via OpenStreetMap)`;
+    });
 
     const allLatLngs = runs.flatMap(r => r.waypoints.map(w => [w.lat, w.lng]));
     runs.forEach(run => {
@@ -829,7 +942,16 @@ function renderLogbookMapTab(neighborhood, runs) {
       });
     });
 
-    if (allLatLngs.length) map.fitBounds(allLatLngs, { padding: [24, 24] });
+    // Fit to the combination of the boundary and any runs, so the full
+    // neighborhood stays visible even when runs only cover a small corner
+    // of it, rather than zooming in tight on just the studied routes.
+    if (boundaryBounds && allLatLngs.length) {
+      map.fitBounds(boundaryBounds.extend(allLatLngs), { padding: [16, 16] });
+    } else if (allLatLngs.length) {
+      map.fitBounds(allLatLngs, { padding: [24, 24] });
+    } else if (boundaryBounds) {
+      map.fitBounds(boundaryBounds, { padding: [16, 16] });
+    }
   });
 }
 
